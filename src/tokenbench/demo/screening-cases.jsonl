@@ -1,0 +1,13 @@
+{"schema_version":1,"task_id":"north-value","input":{"sensor":"north","field":"value"},"task_type":"tool_response","grader_spec":{"kind":"exact","expected":"18.4"},"split":"dev"}
+{"schema_version":1,"task_id":"south-unit","input":{"sensor":"south","field":"unit"},"task_type":"tool_response","grader_spec":{"kind":"exact","expected":"F"},"split":"dev"}
+{"schema_version":1,"task_id":"east-value","input":{"sensor":"east","field":"value"},"task_type":"tool_response","grader_spec":{"kind":"exact","expected":"24.8"},"split":"dev"}
+{"schema_version":1,"task_id":"north-verified-unit","input":{"sensor":"north","field":"verified_unit"},"task_type":"tool_response","grader_spec":{"kind":"exact","expected":"C"},"split":"dev"}
+{"schema_version":1,"task_id":"west-validation-unit","input":{"sensor":"west","field":"unit"},"task_type":"tool_response","grader_spec":{"kind":"exact","expected":"F"},"split":"validation"}
+{"schema_version":1,"task_id":"hill-validation-value","input":{"sensor":"hill","field":"value"},"task_type":"tool_response","grader_spec":{"kind":"exact","expected":"14.7"},"split":"validation"}
+{"schema_version":1,"task_id":"harbor-validation-verified-unit","input":{"sensor":"harbor","field":"verified_unit"},"task_type":"tool_response","grader_spec":{"kind":"exact","expected":"F"},"split":"validation"}
+{"schema_version":1,"task_id":"river-validation-unit","input":{"sensor":"river","field":"unit"},"task_type":"tool_response","grader_spec":{"kind":"exact","expected":"C"},"split":"validation"}
+{"schema_version":1,"task_id":"ridge-validation-value","input":{"sensor":"ridge","field":"value"},"task_type":"tool_response","grader_spec":{"kind":"exact","expected":"12.9"},"split":"validation"}
+{"schema_version":1,"task_id":"lake-validation-verified-unit","input":{"sensor":"lake","field":"verified_unit"},"task_type":"tool_response","grader_spec":{"kind":"exact","expected":"F"},"split":"validation"}
+{"schema_version":1,"task_id":"valley-validation-value","input":{"sensor":"valley","field":"value"},"task_type":"tool_response","grader_spec":{"kind":"exact","expected":"26.3"},"split":"validation"}
+{"schema_version":1,"task_id":"park-validation-unit","input":{"sensor":"park","field":"unit"},"task_type":"tool_response","grader_spec":{"kind":"exact","expected":"F"},"split":"validation"}
+{"schema_version":1,"task_id":"central-test-value","input":{"sensor":"central","field":"value"},"task_type":"tool_response","grader_spec":{"kind":"exact","expected":"21.5"},"split":"test"}

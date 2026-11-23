@@ -7,6 +7,12 @@
       "model": "fixture-rag-v1",
       "input_usd_per_million": "0",
       "output_usd_per_million": "0"
+    },
+    {
+      "provider": "local",
+      "model": "fixture-tool-v1",
+      "input_usd_per_million": "0",
+      "output_usd_per_million": "0"
     }
   ]
 }

@@ -1,0 +1,13 @@
+schema_version: 1
+suite_id: tool-screening
+execution: local_fixture
+target:
+  adapter: python
+  entrypoint: tokenbench.demo.screening:run
+  provider: local
+  model: fixture-tool-v1
+  hooks: [tool_response]
+  budgeted_model_calls: true
+cases: screening-cases.jsonl
+split: dev
+price_snapshot: prices.json

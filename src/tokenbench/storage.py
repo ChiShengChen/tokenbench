@@ -17,7 +17,8 @@ CREATE TABLE run_manifest (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     manifest_json TEXT NOT NULL,
     started_at TEXT NOT NULL,
-    finished_at TEXT
+    finished_at TEXT,
+    stop_reason TEXT
 );
 CREATE TABLE attempts (
     id INTEGER PRIMARY KEY,
@@ -44,6 +45,7 @@ CREATE TABLE model_calls (
     reasoning_tokens INTEGER,
     usage_source TEXT NOT NULL DEFAULT 'unknown',
     cost_usd TEXT,
+    cost_upper_bound_usd TEXT,
     cost_source TEXT NOT NULL DEFAULT 'unknown',
     started_at TEXT NOT NULL,
     duration_ms REAL
@@ -113,10 +115,13 @@ class Ledger:
             (status, passed, error_type, elapsed_ms(started), attempt_id),
         )
 
-    def start_call(self, attempt_id: int, provider: str, model: str) -> int:
+    def start_call(
+        self, attempt_id: int, provider: str, model: str, bound: str | None = None
+    ) -> int:
         cursor = self.connection.execute(
-            "INSERT INTO model_calls (attempt_id, provider, model, started_at) VALUES (?, ?, ?, ?)",
-            (attempt_id, provider, model, now()),
+            """INSERT INTO model_calls (attempt_id, provider, model, started_at, cost_upper_bound_usd)
+               VALUES (?, ?, ?, ?, ?)""",
+            (attempt_id, provider, model, now(), bound),
         )
         assert cursor.lastrowid is not None
         return cursor.lastrowid
@@ -144,8 +149,17 @@ class Ledger:
             },
         )
 
-    def finish_run(self) -> None:
-        self.connection.execute("UPDATE run_manifest SET finished_at = ? WHERE id = 1", (now(),))
+    def finish_run(self, stop_reason: str | None = None) -> None:
+        if stop_reason is not None:
+            for table in ("model_calls", "attempts"):
+                self.connection.execute(
+                    f"UPDATE {table} SET status = 'interrupted', error_type = ? WHERE status = 'running'",
+                    (stop_reason,),
+                )
+        self.connection.execute(
+            "UPDATE run_manifest SET finished_at = ?, stop_reason = ? WHERE id = 1",
+            (now(), stop_reason),
+        )
 
     def record_policy(self, attempt_id: int, audit: PolicyAudit, started: int) -> None:
         self.connection.execute(

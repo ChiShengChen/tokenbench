@@ -2,6 +2,18 @@
 
 TokenBench runs local baselines and deterministic policy experiments for Python applications. It executes each case against a callable, grades its JSON result by exact match, and records attempts, model calls, usage, and policy events in SQLite. The bundled toy RAG suite runs end to end against frozen records and a deterministic fixture model.
 
+```mermaid
+flowchart LR
+    accTitle: TokenBench benchmark flow
+    accDescr: Case inputs go to the Python target. Expected answers go directly to the grader. SQLite records traces and grades for the reports.
+    suite["Suite and cases"] -->|Input| target["Python target"]
+    suite -.->|Expected answer| grader["Exact grader"]
+    target -->|Answer| grader
+    target -->|Usage and traces| ledger[("SQLite")]
+    grader -->|Grade| ledger
+    ledger --> reports["HTML and JSON"]
+```
+
 ## Install and run the offline demo
 
 TokenBench requires Python 3.11 or later. Install the dependencies with `uv sync` from the project root. The initial setup fetches the locked dependencies. Running the demo requires zero API keys and zero network access.
@@ -24,11 +36,11 @@ If your checkout is on exFAT, run `export UV_PROJECT_ENVIRONMENT="$HOME/.local/s
 | --- | --- |
 | `tokenbench --help` | Lists the available commands. Add `--help` after a command to show its options. |
 | `tokenbench doctor` | Reports the Python and SQLite versions and performs an in-memory SQLite write. |
-| `tokenbench init --path DIRECTORY` | Copies `suite.yaml`, `cases.jsonl`, `prices.json`, and `experiment.yaml` to the requested directory. Existing demo files cause the command to stop before copying. |
+| `tokenbench init --path DIRECTORY` | Copies the offline Toy RAG and tool-screening suites, task cases, price snapshot, and example experiments to the requested directory. Existing demo files cause the command to stop before copying. |
 | `tokenbench baseline --suite FILE --dry-run` | Validates YAML, all task records, the price snapshot if configured, and the Python entrypoint. It imports the configured module. It runs zero trials and writes zero output files. |
 | `tokenbench baseline --suite FILE --out DIRECTORY` | Runs the selected cases sequentially and writes the three artifacts below. `--out` must point to a new or empty directory. A completed benchmark exits successfully regardless of the measured pass rate. Invalid configuration and filesystem errors produce a nonzero exit status. |
-| `tokenbench run --experiment FILE --dry-run` | Validates the experiment, suite, Python entrypoint, and enabled policy parameters, order, and hook requirements. It runs zero trials and writes zero output files. |
-| `tokenbench run --experiment FILE [--out DIRECTORY]` | Runs the baseline and named candidates on the same cases. Output defaults to `runs/<experiment-id>` and must point to a new or empty directory. Candidate pass rates and coverage are reported as results. |
+| `tokenbench run --experiment FILE --dry-run` | Validates the experiment, suite, Python entrypoint, policy configuration, and any validation split or budget requirements. It runs zero trials and writes zero output files. |
+| `tokenbench run --experiment FILE [--out DIRECTORY]` | Runs named candidates, single-policy and pairwise screening, or optional Optuna search. It writes comparison and Pareto reports, including completed results when a configured budget stops the run. Output defaults to `runs/<experiment-id>` and must point to a new or empty directory. |
 
 Run the commands with `uv run` from the project root, or directly in the installed environment.
 
@@ -100,7 +112,7 @@ uv run tokenbench run --experiment ./tokenbench-demo/experiment.yaml --out ./run
 
 Use `init` with a fresh directory if your demo predates `experiment.yaml`. The bundled experiment selects the first two or first one of the three ranked documents. The frozen fixture passes 36/36 cases in all three configurations and emits 1,776 estimated total tokens for baseline, 1,344 for top-2, and 912 for top-1.
 
-An experiment YAML contains `schema_version: 1`, an `experiment_id`, a `suite` path relative to the YAML, and a `candidates` list. Each candidate has a unique `name` and an ordered `policies` list. Each policy has an `id`, optional `hook` and `enabled` fields, and typed `parameters`. Set `enabled: false` to disable a policy or use `policies: []` for a no-op candidate. This example uses the bundled suite.
+An experiment YAML contains `schema_version: 1`, an `experiment_id`, a `suite` path relative to the YAML, and one of `candidates`, `screening`, or `search`. It can include `budget` and `quality` settings. For manually configured experiments, each candidate has a unique `name` and an ordered `policies` list. Each policy has an `id`, optional `hook` and `enabled` fields, and typed `parameters`. Set `enabled: false` to disable a policy or use `policies: []` for a no-op candidate. This example uses the bundled suite.
 
 ```yaml
 schema_version: 1
@@ -114,6 +126,96 @@ candidates:
 ```
 
 See all seven implemented policy IDs, parameters, regression examples, and researched future methods in the [strategy catalog](docs/strategy-catalog.md).
+
+### Screen single policies and pairs
+
+```sh
+uv run tokenbench run --experiment ./tokenbench-demo/screening.yaml --dry-run
+uv run tokenbench run --experiment ./tokenbench-demo/screening.yaml --out ./runs/tool-screening
+```
+
+The bundled `screening.yaml` uses three factors. A factor has a unique `name` and one enabled `policy`. The runner executes an unmodified baseline, each factor on its own, and each compatible two-factor combination. For policies sharing a hook, their order follows the order in `screening`. The report records incompatible pairs and the compiler reason. Screening executes only cases labeled `dev`. A suite with no explicit split defaults to `dev` in this mode. A suite that explicitly selects `validation` or `test` is rejected.
+
+The bundled tool fixture passes all four `dev` cases at 176 estimated tokens. Field projection and deduplication individually save 96 and 80 tokens. Together they save 128 because some savings overlap. The pair passes two cases, with regressions on the unit lookup and backup verification. The fixture has zero billable cost.
+
+The pairwise report computes **interaction = observed pair change − first single change − second single change**, with all changes measured against the same baseline. A positive token or USD interaction means the pair uses more than the additive estimate. A positive pass interaction means the pair passes more trials than the additive estimate. Unsupported or failed comparisons and unavailable measurements have unknown interaction values. The HTML and JSON reports list the individual regressed trials.
+
+### Apply budgets and validate finalists
+
+```sh
+uv run tokenbench run --experiment ./tokenbench-demo/quality-screening.yaml --dry-run
+uv run tokenbench run --experiment ./tokenbench-demo/quality-screening.yaml
+```
+
+The example adds the following settings to the screening experiment.
+
+```yaml
+budget:
+  max_trials: 6
+  max_seconds: 30
+  max_usd: '0'
+quality:
+  min_success_rate: '1'
+  max_absolute_drop: '0'
+  critical_task_ids: [south-unit, west-validation-unit]
+  validation_candidates: 1
+```
+
+- `max_trials` caps candidate configurations started in the search phase. Baselines and the separately bounded validation finalists use the shared time and USD limits.
+- `max_seconds` covers evaluation across both splits. Async targets can be cancelled at await points. The runner uses an available POSIX timer for blocking synchronous calls on the main thread. In other environments, and for native code that delays signal handling, it checks the deadline at target and trace boundaries. The runner finalizes the ledger and writes reports after stopping.
+- `max_usd` requires `target.budgeted_model_calls: true` and a conservative `max_cost_usd` on every instrumented call. Set a real per-call upper bound from the provider tariff and enforced input and output limits. Include any paid work and retries in that bound or give them their own reservations. The runner blocks a call before execution if its reservation would exceed the available budget. Provider-reported costs release unused reservations. Estimated or unknown costs retain their reservation. If observed cost exceeds a declared bound, the runner stops and reports the violation. This cap relies on the target instrumenting its billable work and supplying valid bounds. The offline fixtures declare a zero bound.
+
+```mermaid
+flowchart TB
+    accTitle: Per-call spend reservation
+    accDescr: Each call reserves its upper cost bound before execution. An unaffordable reservation stops the experiment. After a call, provider-reported cost releases unused funds, estimated or unknown cost keeps the reservation, and a bound violation stops the experiment.
+    request["Declare the call's USD bound"] --> fits{"Fits the remaining budget?"}
+    fits -->|No| stopped["Stop before call<br/>Save results"]
+    fits -->|Yes| execute["Reserve funds and run call"]
+    execute --> settle{"What did the call cost?"}
+    settle -->|Reported within bound| release["Settle billed cost"]
+    settle -->|Estimated within bound or unknown| retain["Keep the reservation"]
+    settle -->|Above bound| violation["Record violation and stop"]
+```
+
+For example, a target with a conservative upper bound of USD 0.002 per request can use `with trace.model_call(max_cost_usd=Decimal("0.002")) as call:`. The amount and actual usage stay auditable in SQLite. Reaching a budget records a partial experiment and preserves completed results. Partial candidates have no baseline deltas or Pareto eligibility.
+
+`quality` filters on `dev` using the minimum absolute success rate, maximum drop from the paired baseline, and newly failed repetitions of any listed critical task. Both rates are fractions from 0 to 1. The defaults are a minimum success rate of 0 and no allowed drop. Critical tasks may belong to either `dev` or `validation`. The runner orders passing `dev` candidates by known cost, then known tokens, higher success, and name, and freezes that selection before validation. It reruns the selected configurations and a fresh baseline on the same suite's `validation` split and applies the same gate there. The `test` split is reserved for a separate final evaluation. The offline example validates the boilerplate filter on eight independent tasks and records the quality failures of more aggressive candidates.
+
+```mermaid
+flowchart TB
+    accTitle: Development screening and independent validation
+    accDescr: The quality gate filters candidates on development cases. Selected finalists rerun against a fresh baseline on validation cases. Finalists that pass again get a replay YAML.
+    dev["dev<br/>Run baseline and candidates"] --> firstGate{"Pass quality gate?"}
+    firstGate -->|No| devFailures["Report development failures"]
+    firstGate -->|Yes| shortlist["Freeze selected finalists"]
+    shortlist --> validation["validation<br/>Rerun finalists and a fresh baseline"]
+    validation --> secondGate{"Pass the same gate?"}
+    secondGate -->|No| valFailures["Report validation failures"]
+    secondGate -->|Yes| replay["Export replay.yaml"]
+```
+
+### Interpret confidence intervals and replay confirmed configurations
+
+`comparison.json` and `comparison.html` show two-sided 95% paired percentile bootstrap intervals. Each resample draws task IDs with replacement and keeps each task's baseline and candidate repetitions together. The reported deltas are candidate minus baseline for success rate, mean tokens per trial, and mean USD per trial. Usage includes all instrumented attempts, including retries. HTML shows success rate deltas in percentage points, and JSON stores fractions. The calculation defaults to 2,000 resamples with seed 42. Set `bootstrap: {resamples: 2000, seed: 42}` in the experiment YAML to record or change these settings. [SciPy paired bootstrap reference](https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.bootstrap.html)
+
+Reports include the counts of paired tasks and trials. Intervals are unavailable for incomplete comparisons and comparisons with fewer than two paired tasks. Unknown token or USD measurements suppress the corresponding interval whenever a task pair is missing that metric. A small sample or uniform deltas can produce a narrow interval, so read it alongside the task count and the split. The quality gate uses the observed paired outcomes.
+
+A completed finalist that passes independent validation gets a `replay.yaml` in its validation run directory. The file retains the exact ordered policies, quality gate, budget, and bootstrap settings. It records the source experiment hash and verifies suite, case, pricing, and available target-module fingerprints, as well as the TokenBench version and saved settings. Keep the original suite and fixtures at the referenced locations. A replay reruns the fixed configuration against fresh baselines on `dev` and `validation` using the same Python target.
+
+```sh
+uv run tokenbench run --experiment ./runs/quality-screening/validation/boilerplate/replay.yaml --dry-run
+uv run tokenbench run --experiment ./runs/quality-screening/validation/boilerplate/replay.yaml --out ./runs/quality-replay
+```
+
+### Run optional Optuna search
+
+```sh
+uv sync --extra search
+uv run --extra search tokenbench run --experiment ./tokenbench-demo/search.yaml
+```
+
+In `search.factors`, each factor has a `name` and one or more typed `choices` for the same policy and hook. Optuna can omit a factor or choose one parameterization of it. The listed order controls compilation. The seeded NSGA-II sampler searches the `dev` split under the required `budget.max_trials` and any time or spend bounds. Fully measured configurations that pass the configured quality gate supply four objectives to Optuna. Each unique policy configuration is run once, and the unmodified baseline is run separately. Pareto reports show measured results and tag incomplete, rejected, and unknown-cost configurations. [Optuna Study](https://optuna.readthedocs.io/en/stable/reference/generated/optuna.study.Study.html)
 
 ### Add target hooks
 
@@ -150,15 +252,21 @@ Experiments use the same suite and input order for all candidates. Reset any ext
 - `summary.json` contains the manifest, paired task and repetition identifiers, final-trial success totals, all attempts, and per-call usage and cost sources. Totals include failed calls and retries. A complete total is `null` when relevant observations are missing. Known subtotals and missing counts are shown separately. USD amounts are decimal strings.
 - `summary.html` presents the run metadata, aggregate results, and attempt ledger as a standalone report.
 
-An experiment creates `baseline/` and one directory per candidate with its own ledger and summaries. The experiment root contains `comparison.json` and `comparison.html` with paired regressions, improvements, and token and USD deltas. Unknown or unsupported deltas are `null` in JSON. The per-attempt policy audit includes changed or removed segment IDs, kept and removed references, estimated before/after context tokens, compressor overhead, and failure reasons. SQLite stores policy runtime, and the deterministic JSON includes policy IDs, version, order, and configuration hashes. Context estimates use whitespace counts for hook inputs and outputs. Step checks record their step number and leave context counts unset. End-to-end token deltas come from model call usage in the ledger.
+An experiment creates `baseline/` and one directory per candidate with its own ledger and summaries. Independent validation runs are under `validation/`. `comparison.json` and `comparison.html` show paired outcomes, budget status, and quality decisions. `pareto.json` and `pareto.html` show success rate, total tokens, USD, and observed p95 trial latency for each split. P95 uses the nearest rank on per-trial sums of attempt durations, including retries. A candidate is on the observed frontier if no eligible configuration matches or improves every objective and improves at least one. A partial experiment can still show a frontier among fully evaluated points. Missing metrics appear as `null` in JSON and exclude a point from the frontier.
 
-The demo's `local_fixture` label identifies an end-to-end fixture evaluation. Its whitespace-based counts are estimates, and its zero USD rates apply only to the local fixture model. Repeating a frozen run to a fresh directory produces identical JSON and HTML. Observed timing stays in SQLite. The manifest fingerprints the suite, dataset, price snapshot when present, and the callable's source module when available.
+The per-attempt policy audit includes changed or removed segment IDs, kept and removed references, estimated before/after context tokens, compressor overhead, and failure reasons. SQLite stores policy runtime, and the deterministic JSON includes policy IDs, version, order, and configuration hashes. Context estimates use whitespace counts for hook inputs and outputs. Step checks record their step number and leave context counts unset. End-to-end token deltas come from model call usage in the ledger.
+
+The demo's `local_fixture` label identifies an end-to-end fixture evaluation. Its whitespace-based counts are estimates, and its zero USD rates apply only to the local fixture model. Baseline and fixed-candidate comparison artifacts omit timing and remain deterministic when the experiments complete with the same observations. Pareto reports and SQLite contain observed timing. Adaptive choices can change with measured latency. The manifest fingerprints the suite, dataset, price snapshot when present, and the callable's source module when available.
 
 ## Development checks
 
+GitHub Actions runs these checks on Python 3.11 and 3.15 for pull requests and updates to `main`. The smoke test runs the installed CLI against the offline fixtures, verifies that a capped Optuna search preserves its completed results, and reruns its confirmed replay YAML.
+
 ```sh
+uv sync --locked --extra search
 uv run pytest
 uv run ruff check .
 uv run ruff format --check .
-uv run mypy
+uv run mypy src tests scripts
+uv run --extra search python scripts/ci_smoke.py
 ```

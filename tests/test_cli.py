@@ -39,6 +39,11 @@ def test_demo_runs_and_reruns_with_identical_reports(tmp_path: Path) -> None:
         "cases.jsonl",
         "experiment.yaml",
         "prices.json",
+        "quality-screening.yaml",
+        "screening-cases.jsonl",
+        "screening-suite.yaml",
+        "screening.yaml",
+        "search.yaml",
         "suite.yaml",
     ]
     assert cli.invoke(app, ["init", "--path", str(demo)]).exit_code == 1

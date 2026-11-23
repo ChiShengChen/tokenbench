@@ -10,6 +10,9 @@ dependencies = [
     "typer>=0.16,<1",
 ]
 
+[project.optional-dependencies]
+search = ["optuna>=4.6,<5"]
+
 [project.scripts]
 tokenbench = "tokenbench.cli:app"
 
@@ -32,6 +35,10 @@ testpaths = ["tests"]
 python_version = "3.11"
 strict = true
 files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["optuna.*"]
+ignore_missing_imports = true
 
 [tool.ruff]
 target-version = "py311"

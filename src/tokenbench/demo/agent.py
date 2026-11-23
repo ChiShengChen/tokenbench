@@ -62,7 +62,7 @@ def run(task_input: dict[str, JsonValue], trace: TraceSink) -> JsonValue:
     prompt = json.dumps(
         {"query": query, "documents": [segment.content for segment in context]}, sort_keys=True
     )
-    with trace.model_call() as call:
+    with trace.model_call(max_cost_usd=0) as call:
         answer = fixture_completion(prompt)
         call.estimate_usage(len(prompt.split()), len(json.dumps(answer).split()))
     return answer

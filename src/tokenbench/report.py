@@ -8,8 +8,9 @@ from html import escape
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from tokenbench.budget import StopReason
 from tokenbench.config import TargetSpec
 from tokenbench.policies.models import HookName, PolicyAudit
 from tokenbench.pricing import UsageRecord
@@ -46,6 +47,7 @@ class CallSummary(UsageRecord):
     model: str
     status: CallStatus
     error_type: str | None
+    cost_upper_bound_usd: Decimal | None = None
 
 
 class AttemptSummary(BaseModel):
@@ -62,7 +64,7 @@ class AttemptSummary(BaseModel):
 class Totals(BaseModel):
     trials: int
     successful_trials: int
-    success_rate: float
+    success_rate: float | None
     attempts: int
     retries: int
     attempt_errors: int
@@ -82,9 +84,27 @@ class BaselineSummary(BaseModel):
     manifest: RunManifest
     totals: Totals
     attempts: list[AttemptSummary]
+    stop_reason: StopReason | None = None
+    p95_latency_ms: float | None = Field(default=None, exclude=True)
 
 
-def summarize(ledger: Ledger, manifest: RunManifest) -> BaselineSummary:
+def final_outcomes(
+    attempts: Sequence[AttemptSummary], max_retries: int
+) -> dict[tuple[str, int], bool]:
+    final = {(attempt.task_id, attempt.repetition): attempt for attempt in attempts}
+    return {
+        key: attempt.passed is True
+        for key, attempt in final.items()
+        if attempt.status != "interrupted"
+        and (attempt.status != "error" or attempt.attempt > max_retries)
+    }
+
+
+def summarize(
+    ledger: Ledger,
+    manifest: RunManifest,
+    stop_reason: StopReason | None = None,
+) -> BaselineSummary:
     calls_by_attempt: dict[int, list[CallSummary]] = defaultdict(list)
     calls: list[CallSummary] = []
     for row in ledger.connection.execute("SELECT * FROM model_calls ORDER BY id"):
@@ -113,8 +133,8 @@ def summarize(ledger: Ledger, manifest: RunManifest) -> BaselineSummary:
         )
         for row in ledger.connection.execute("SELECT * FROM attempts ORDER BY id")
     ]
-    final_attempts = {(attempt.task_id, attempt.repetition): attempt for attempt in attempts}
-    successful = sum(attempt.passed is True for attempt in final_attempts.values())
+    outcomes = final_outcomes(attempts, manifest.max_retries)
+    successful = sum(outcomes.values())
     missing_counts = sum(call.input_tokens is None or call.output_tokens is None for call in calls)
     input_tokens = sum(call.input_tokens or 0 for call in calls)
     output_tokens = sum(call.output_tokens or 0 for call in calls)
@@ -122,9 +142,9 @@ def summarize(ledger: Ledger, manifest: RunManifest) -> BaselineSummary:
     costs = [call.cost_usd for call in calls if call.cost_usd is not None]
     known_cost = sum(costs, Decimal(0)) if costs else None
     totals = Totals(
-        trials=len(final_attempts),
+        trials=len(outcomes),
         successful_trials=successful,
-        success_rate=successful / len(final_attempts),
+        success_rate=successful / len(outcomes) if outcomes else None,
         attempts=len(attempts),
         retries=sum(attempt.attempt > 1 for attempt in attempts),
         attempt_errors=sum(attempt.status == "error" for attempt in attempts),
@@ -135,11 +155,31 @@ def summarize(ledger: Ledger, manifest: RunManifest) -> BaselineSummary:
         calls_with_missing_token_counts=missing_counts,
         known_input_tokens=input_tokens,
         known_output_tokens=output_tokens,
-        total_tokens=input_tokens + output_tokens if not (missing_counts or untraced) else None,
+        total_tokens=input_tokens + output_tokens
+        if calls and not (missing_counts or untraced)
+        else None,
         known_cost_usd=known_cost,
         total_cost_usd=known_cost if not untraced and len(costs) == len(calls) else None,
     )
-    return BaselineSummary(manifest=manifest, totals=totals, attempts=attempts)
+    latencies = (
+        sorted(
+            float(row["elapsed_ms"])
+            for row in ledger.connection.execute(
+                "SELECT SUM(duration_ms) AS elapsed_ms FROM attempts GROUP BY task_id, repetition"
+            )
+            if row["elapsed_ms"] is not None
+        )
+        if stop_reason is None
+        else []
+    )
+    p95 = latencies[(len(latencies) * 95 + 99) // 100 - 1] if latencies else None
+    return BaselineSummary(
+        manifest=manifest,
+        totals=totals,
+        attempts=attempts,
+        stop_reason=stop_reason,
+        p95_latency_ms=p95,
+    )
 
 
 def table(headers: tuple[str, ...], rows: Sequence[tuple[object, ...]]) -> str:
@@ -170,7 +210,14 @@ def render_html(summary: BaselineSummary) -> str:
         ("Metric", "Value"),
         [
             ("Successful trials", f"{totals.successful_trials}/{totals.trials}"),
-            ("Success rate", f"{totals.success_rate:.1%}"),
+            (
+                "Success rate",
+                f"{totals.success_rate:.1%}" if totals.success_rate is not None else "Unknown",
+            ),
+            (
+                "Run status",
+                f"Partial ({summary.stop_reason})" if summary.stop_reason else "Complete",
+            ),
             ("Attempts", totals.attempts),
             ("Retries", totals.retries),
             ("Attempt errors", totals.attempt_errors),

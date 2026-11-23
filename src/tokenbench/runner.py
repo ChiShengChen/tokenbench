@@ -1,5 +1,6 @@
 """Run Python target trials with scoped policy hooks and exact grading."""
 
+import asyncio
 from contextlib import closing
 from copy import deepcopy
 from functools import partial
@@ -8,13 +9,18 @@ from importlib.metadata import version
 from pathlib import Path
 from time import perf_counter_ns
 
+from pydantic import JsonValue
+
+from tokenbench.budget import BudgetStopped, ExperimentBudget, StopReason
 from tokenbench.config import LoadedSuite
 from tokenbench.policies.compiler import CompiledPolicies
 from tokenbench.policies.deterministic import PolicyError
 from tokenbench.policies.runtime import PolicySession
+from tokenbench.pricing import ModelPrice
 from tokenbench.report import BaselineSummary, PolicyManifest, RunManifest, summarize, write_reports
 from tokenbench.storage import Ledger
 from tokenbench.targets.python_callable import PythonCallableTarget
+from tokenbench.tasks import TaskCase
 from tokenbench.trace import TraceSink
 
 
@@ -22,8 +28,9 @@ async def run_baseline(
     suite: LoadedSuite,
     target: PythonCallableTarget,
     output: Path,
+    budget: ExperimentBudget | None = None,
 ) -> BaselineSummary:
-    return await run_suite(suite, target, output, CompiledPolicies())
+    return await run_suite(suite, target, output, CompiledPolicies(), budget)
 
 
 def create_output(output: Path) -> None:
@@ -37,6 +44,7 @@ async def run_suite(
     target: PythonCallableTarget,
     output: Path,
     compiled: CompiledPolicies,
+    budget: ExperimentBudget | None = None,
 ) -> BaselineSummary:
     spec = suite.spec
     fingerprints = dict(suite.fingerprints)
@@ -72,36 +80,82 @@ async def run_suite(
     create_output(output)
     database = "candidate.sqlite3" if compiled.policies else "baseline.sqlite3"
     with closing(Ledger(output / database, manifest.model_dump_json())) as ledger:
-        for task in suite.cases:
-            for repetition in range(1, spec.repetitions + 1):
-                for attempt in range(1, spec.max_retries + 2):
-                    attempt_id = ledger.start_attempt(task.task_id, repetition, attempt)
-                    policies = (
-                        PolicySession(compiled, partial(ledger.record_policy, attempt_id))
-                        if compiled.policies
-                        else None
+        stopped: StopReason | None = None
+        try:
+            for task in suite.cases:
+                for repetition in range(1, spec.repetitions + 1):
+                    await run_trial(
+                        suite, target, compiled, ledger, task, repetition, prices, budget
                     )
-                    trace = TraceSink(ledger, attempt_id, spec.target, prices, policies)
-                    started = perf_counter_ns()
-                    try:
-                        answer = await target.run(deepcopy(task.input), trace)
-                        if policies is not None:
-                            policies.check()
-                        passed = task.grader_spec.passes(answer)
-                    except PolicyError as exc:
-                        ledger.finish_attempt(attempt_id, "failed", started, type(exc).__name__)
-                        break
-                    except Exception as exc:
-                        ledger.finish_attempt(attempt_id, "error", started, type(exc).__name__)
-                    except BaseException as exc:
-                        ledger.finish_attempt(
-                            attempt_id, "interrupted", started, type(exc).__name__
-                        )
-                        raise
-                    else:
-                        ledger.finish_attempt(attempt_id, "passed" if passed else "failed", started)
-                        break
-        ledger.finish_run()
-        summary = summarize(ledger, manifest)
+        except BudgetStopped as exc:
+            stopped = exc.reason
+        ledger.finish_run(stopped)
+        summary = summarize(ledger, manifest, stopped)
         write_reports(output, summary)
     return summary
+
+
+async def run_trial(
+    suite: LoadedSuite,
+    target: PythonCallableTarget,
+    compiled: CompiledPolicies,
+    ledger: Ledger,
+    task: TaskCase,
+    repetition: int,
+    prices: dict[tuple[str, str], ModelPrice],
+    budget: ExperimentBudget | None,
+) -> None:
+    for attempt in range(1, suite.spec.max_retries + 2):
+        if budget is not None:
+            budget.remaining_seconds()
+        attempt_id = ledger.start_attempt(task.task_id, repetition, attempt)
+        policies = (
+            PolicySession(compiled, partial(ledger.record_policy, attempt_id))
+            if compiled.policies
+            else None
+        )
+        trace = TraceSink(ledger, attempt_id, suite.spec.target, prices, policies, budget)
+        started = perf_counter_ns()
+        try:
+            answer = await evaluate(target, deepcopy(task.input), trace, budget)
+            if policies is not None:
+                policies.check()
+            passed = task.grader_spec.passes(answer)
+        except BudgetStopped as exc:
+            ledger.finish_attempt(attempt_id, "interrupted", started, exc.reason)
+            raise
+        except PolicyError as exc:
+            ledger.finish_attempt(attempt_id, "failed", started, type(exc).__name__)
+            return
+        except Exception as exc:
+            ledger.finish_attempt(attempt_id, "error", started, type(exc).__name__)
+        except BaseException as exc:
+            ledger.finish_attempt(attempt_id, "interrupted", started, type(exc).__name__)
+            raise
+        else:
+            ledger.finish_attempt(attempt_id, "passed" if passed else "failed", started)
+            return
+
+
+async def evaluate(
+    target: PythonCallableTarget,
+    task_input: dict[str, JsonValue],
+    trace: TraceSink,
+    budget: ExperimentBudget | None,
+) -> JsonValue:
+    if budget is None:
+        return await target.run(task_input, trace)
+    timer = asyncio.timeout(budget.remaining_seconds())
+    try:
+        async with timer:
+            output = await target.run(task_input, trace, budget)
+    except TimeoutError:
+        if timer.expired():
+            budget.stop("max_seconds")
+        budget.remaining_seconds()
+        raise
+    except Exception:
+        budget.remaining_seconds()
+        raise
+    budget.remaining_seconds()
+    return output

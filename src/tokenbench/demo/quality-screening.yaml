@@ -1,0 +1,20 @@
+schema_version: 1
+experiment_id: quality-screening
+suite: screening-suite.yaml
+budget: {max_trials: 6, max_seconds: 30, max_usd: '0'}
+quality:
+  min_success_rate: '1'
+  max_absolute_drop: '0'
+  critical_task_ids: [south-unit, west-validation-unit]
+  validation_candidates: 1
+screening:
+  - name: project
+    policy:
+      id: filter.schema_projection
+      parameters: {allow_keys: [value]}
+  - name: boilerplate
+    policy:
+      id: filter.boilerplate
+      parameters: {drop_lines: ['<nav>Sensor catalogue menu and operator help</nav>']}
+  - name: dedup
+    policy: {id: filter.deduplicate}
