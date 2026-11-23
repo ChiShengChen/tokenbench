@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "snapshot_id": "toy-fixture-v1",
+  "prices": [
+    {
+      "provider": "local",
+      "model": "fixture-rag-v1",
+      "input_usd_per_million": "0",
+      "output_usd_per_million": "0"
+    }
+  ]
+}

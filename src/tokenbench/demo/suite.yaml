@@ -1,0 +1,10 @@
+schema_version: 1
+suite_id: toy-rag
+execution: local_fixture
+target:
+  adapter: python
+  entrypoint: tokenbench.demo.agent:run
+  provider: local
+  model: fixture-rag-v1
+cases: cases.jsonl
+price_snapshot: prices.json
