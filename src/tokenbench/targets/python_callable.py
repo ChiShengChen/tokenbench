@@ -2,6 +2,7 @@
 
 import inspect
 from collections.abc import Awaitable, Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
 from hashlib import sha256
 from importlib import import_module
@@ -10,6 +11,7 @@ from typing import TypeAlias
 
 from pydantic import JsonValue, TypeAdapter
 
+from tokenbench.budget import ExperimentBudget
 from tokenbench.config import ConfigurationError, TargetSpec
 from tokenbench.trace import TraceSink
 
@@ -52,8 +54,14 @@ class PythonCallableTarget:
             return None
         return None
 
-    async def run(self, task_input: dict[str, JsonValue], trace: TraceSink) -> JsonValue:
-        output = self.function(task_input, trace)
+    async def run(
+        self,
+        task_input: dict[str, JsonValue],
+        trace: TraceSink,
+        budget: ExperimentBudget | None = None,
+    ) -> JsonValue:
+        with budget.interrupt_sync_call() if budget is not None else nullcontext():
+            output = self.function(task_input, trace)
         if inspect.isawaitable(output):
             output = await output
         return _JSON_VALUE.validate_python(output, strict=True)

@@ -12,7 +12,7 @@ from typing import Annotated
 import typer
 
 from tokenbench.config import ConfigurationError, load_suite
-from tokenbench.experiment import load_experiment, run_experiment
+from tokenbench.experiment import load_experiment, run_experiment, verify_replay_target
 from tokenbench.runner import run_baseline
 from tokenbench.targets.python_callable import PythonCallableTarget
 
@@ -28,9 +28,19 @@ app = typer.Typer(
 def init(
     path: Annotated[Path, typer.Option(help="Directory for the bundled toy RAG suite.")],
 ) -> None:
-    """Copy the offline suite, fixtures, and example policy experiment."""
+    """Copy the offline suites, fixtures, and example policy experiments."""
     assets = files("tokenbench.demo")
-    filenames = ("suite.yaml", "cases.jsonl", "prices.json", "experiment.yaml")
+    filenames = (
+        "suite.yaml",
+        "cases.jsonl",
+        "prices.json",
+        "experiment.yaml",
+        "screening.yaml",
+        "screening-suite.yaml",
+        "screening-cases.jsonl",
+        "quality-screening.yaml",
+        "search.yaml",
+    )
     try:
         path.mkdir(parents=True, exist_ok=True)
         if any((path / name).exists() or (path / name).is_symlink() for name in filenames):
@@ -100,14 +110,25 @@ def run(
         bool, typer.Option(help="Validate the suite, target, and policies without running trials.")
     ] = False,
 ) -> None:
-    """Compare explicitly configured policies against an unmodified baseline."""
+    """Compare, screen, or search policy configurations against a baseline."""
     try:
         loaded = load_experiment(experiment)
         target = PythonCallableTarget.from_spec(loaded.suite.spec.target)
         if dry_run:
-            typer.echo(
-                f"Valid experiment {loaded.spec.experiment_id!r}: {len(loaded.configurations)} candidates"
+            verify_replay_target(loaded, target)
+            count = (
+                len(loaded.configurations)
+                if loaded.spec.search is None
+                else loaded.spec.search.space_size
             )
+            typer.echo(f"Valid experiment {loaded.spec.experiment_id!r}: {count} candidates")
+            if loaded.spec.screening is not None:
+                skipped = sum(pair.incompatibility is not None for pair in loaded.pairs)
+                typer.echo(
+                    f"Screening on dev: {len(loaded.suite.cases)} cases, {skipped} incompatible pairs"
+                )
+            if loaded.validation_suite is not None:
+                typer.echo(f"Independent validation: {len(loaded.validation_suite.cases)} cases")
             return
         output = out if out is not None else Path("runs") / loaded.spec.experiment_id
         summary = asyncio.run(run_experiment(loaded, target, output))
@@ -119,4 +140,12 @@ def run(
             f"{candidate.name}: {candidate.totals.successful_trials}/{candidate.totals.trials} "
             f"trials passed, {len(candidate.regressed_trials)} regressions ({candidate.status})"
         )
+    if summary.validation is not None:
+        typer.echo(
+            f"Validation: {len(summary.validation.confirmed)}/{len(summary.validation.selected)} finalists confirmed"
+        )
+        for name, path in summary.validation.replay_configs.items():
+            typer.echo(f"Replay for {name}: {output / path}")
+    if summary.stop_reason is not None:
+        typer.echo(f"Partial experiment: {summary.stop_reason}")
     typer.echo(f"Comparison written to {output}")

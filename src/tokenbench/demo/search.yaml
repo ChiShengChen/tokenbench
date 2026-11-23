@@ -1,0 +1,22 @@
+schema_version: 1
+experiment_id: tool-search
+suite: screening-suite.yaml
+budget: {max_trials: 6, max_seconds: 30, max_usd: '0'}
+quality:
+  min_success_rate: '1'
+  max_absolute_drop: '0'
+  critical_task_ids: [south-unit, west-validation-unit]
+search:
+  seed: 42
+  factors:
+    - name: project
+      choices:
+        - {id: filter.schema_projection, parameters: {allow_keys: [value]}}
+        - {id: filter.schema_projection, parameters: {allow_keys: [value, unit]}}
+    - name: boilerplate
+      choices:
+        - id: filter.boilerplate
+          parameters: {drop_lines: ['<nav>Sensor catalogue menu and operator help</nav>']}
+    - name: dedup
+      choices:
+        - {id: filter.deduplicate}

@@ -25,6 +25,7 @@ class TargetSpec(BaseModel):
     provider: str
     model: str
     hooks: tuple[HookName, ...] = ()
+    budgeted_model_calls: Annotated[bool, Field(strict=True)] = False
 
 
 class SuiteSpec(BaseModel):
@@ -100,7 +101,9 @@ def parse_yaml(data: bytes, path: Path) -> object:
         raise ConfigurationError(f"{path} is invalid YAML") from exc
 
 
-def load_suite(path: Path) -> LoadedSuite:
+def load_suite(
+    path: Path, *, split: Split | None = None, replace_split: bool = False
+) -> LoadedSuite:
     config_data = read_file(path)
     try:
         spec = SuiteSpec.model_validate(parse_yaml(config_data, path))
@@ -108,6 +111,12 @@ def load_suite(path: Path) -> LoadedSuite:
         raise ConfigurationError(
             f"{path} has invalid suite data: {describe_validation(exc)}"
         ) from exc
+    if split is not None:
+        if not replace_split and spec.split is not None and spec.split != split:
+            raise ConfigurationError(
+                f"{path} selects {spec.split!r} but screening requires {split!r}"
+            )
+        spec = spec.model_copy(update={"split": split})
 
     case_path = path.parent / spec.cases
     case_data = read_file(case_path)

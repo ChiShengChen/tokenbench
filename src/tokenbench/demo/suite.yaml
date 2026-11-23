@@ -7,5 +7,6 @@ target:
   provider: local
   model: fixture-rag-v1
   hooks: [retrieval]
+  budgeted_model_calls: true
 cases: cases.jsonl
 price_snapshot: prices.json
