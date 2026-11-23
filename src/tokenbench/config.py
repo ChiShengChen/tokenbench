@@ -3,13 +3,21 @@
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self, TypeAlias
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import (
+    AnyHttpUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
-from tokenbench.policies.models import HookName
-from tokenbench.pricing import PriceSnapshot
+from tokenbench.policies.models import HookName, PositiveInt
+from tokenbench.pricing import NonNegativeUSD, PriceSnapshot
 from tokenbench.tasks import Split, TaskCase, canonical_json
 
 
@@ -17,15 +25,48 @@ class ConfigurationError(ValueError):
     """An invalid suite or target configuration."""
 
 
-class TargetSpec(BaseModel):
+class BaseTargetSpec(BaseModel):
     model_config = ConfigDict(extra="forbid", str_min_length=1)
 
-    adapter: Literal["python"]
-    entrypoint: Annotated[str, Field(pattern=r"^[\w.]+:[A-Za-z_]\w*$")]
     provider: str
     model: str
     hooks: tuple[HookName, ...] = ()
+
+
+class PythonTargetSpec(BaseTargetSpec):
+    adapter: Literal["python"]
+    entrypoint: Annotated[str, Field(pattern=r"^[\w.]+:[A-Za-z_]\w*$")]
     budgeted_model_calls: Annotated[bool, Field(strict=True)] = False
+
+
+class OpenAICompatibleSpec(BaseTargetSpec):
+    adapter: Literal["openai_compatible"]
+    base_url: AnyHttpUrl
+    hooks: tuple[()] = ()
+    api_key_env: Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")] | None = None
+    timeout_seconds: Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)] = 30.0
+    max_completion_tokens: PositiveInt | None = None
+    max_cost_usd: NonNegativeUSD | None = None
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_url(cls, value: AnyHttpUrl) -> AnyHttpUrl:
+        if any(
+            part is not None
+            for part in (value.username, value.password, value.query, value.fragment)
+        ):
+            raise ValueError("base_url cannot include credentials, a query string, or a fragment")
+        return value
+
+    @property
+    def budgeted_model_calls(self) -> bool:
+        return self.max_cost_usd is not None
+
+
+TargetSpec: TypeAlias = Annotated[
+    PythonTargetSpec | OpenAICompatibleSpec, Field(discriminator="adapter")
+]
+ExecutionMode: TypeAlias = Literal["python_callable", "openai_compatible", "local_fixture"]
 
 
 class SuiteSpec(BaseModel):
@@ -33,13 +74,24 @@ class SuiteSpec(BaseModel):
 
     schema_version: Annotated[int, Field(strict=True, ge=1, le=1)]
     suite_id: str
-    execution: Literal["python_callable", "local_fixture"] = "python_callable"
+    execution: ExecutionMode = "python_callable"
     target: TargetSpec
     cases: Path
     split: Split | None = None
     repetitions: Annotated[int, Field(strict=True, ge=1)] = 1
     max_retries: Annotated[int, Field(strict=True, ge=0)] = 0
     price_snapshot: Path | None = None
+
+    @model_validator(mode="after")
+    def validate_execution(self) -> Self:
+        default: ExecutionMode = (
+            "python_callable" if self.target.adapter == "python" else "openai_compatible"
+        )
+        if "execution" not in self.model_fields_set:
+            self.execution = default
+        elif self.execution not in (default, "local_fixture"):
+            raise ValueError("execution must match the adapter or be local_fixture")
+        return self
 
 
 @dataclass(frozen=True)

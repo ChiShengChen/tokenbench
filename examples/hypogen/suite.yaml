@@ -1,0 +1,12 @@
+schema_version: 1
+suite_id: hypogen-metered-fixture
+execution: local_fixture
+target:
+  adapter: python
+  entrypoint: examples.hypogen.hypogen_target:run
+  provider: local
+  model: hypogen-metered-mock
+  hooks: [tool_response]
+  budgeted_model_calls: true
+cases: cases.jsonl
+price_snapshot: prices.json

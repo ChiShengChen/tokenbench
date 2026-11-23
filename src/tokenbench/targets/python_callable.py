@@ -12,7 +12,7 @@ from typing import TypeAlias
 from pydantic import JsonValue, TypeAdapter
 
 from tokenbench.budget import ExperimentBudget
-from tokenbench.config import ConfigurationError, TargetSpec
+from tokenbench.config import ConfigurationError, PythonTargetSpec
 from tokenbench.trace import TraceSink
 
 TargetCallable: TypeAlias = Callable[
@@ -26,7 +26,7 @@ class PythonCallableTarget:
     function: TargetCallable
 
     @classmethod
-    def from_spec(cls, spec: TargetSpec) -> "PythonCallableTarget":
+    def from_spec(cls, spec: PythonTargetSpec) -> "PythonCallableTarget":
         module_name, _, function_name = spec.entrypoint.partition(":")
         try:
             module = import_module(module_name)

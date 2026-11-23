@@ -38,6 +38,7 @@ class ModelPrice(BaseModel):
     model: str
     input_usd_per_million: NonNegativeUSD
     output_usd_per_million: NonNegativeUSD
+    cached_input_usd_per_million: NonNegativeUSD | None = None
 
 
 class PriceSnapshot(BaseModel):
@@ -86,17 +87,15 @@ def normalize_usage(
     cost = usage.cost_usd
     if cost is not None:
         cost_source = "provider"
-    elif (
-        price is not None
-        and usage.input_tokens is not None
-        and usage.output_tokens is not None
-        and not usage.cached_input_tokens
-    ):
-        cost = (
-            usage.input_tokens * price.input_usd_per_million
-            + usage.output_tokens * price.output_usd_per_million
-        ) / 1_000_000
-        cost_source = "price_snapshot"
+    elif price is not None and usage.input_tokens is not None and usage.output_tokens is not None:
+        cached = usage.cached_input_tokens or 0
+        if not cached or price.cached_input_usd_per_million is not None:
+            cost = (
+                (usage.input_tokens - cached) * price.input_usd_per_million
+                + cached * (price.cached_input_usd_per_million or Decimal(0))
+                + usage.output_tokens * price.output_usd_per_million
+            ) / 1_000_000
+            cost_source = "price_snapshot"
 
     return UsageRecord(
         input_tokens=usage.input_tokens,

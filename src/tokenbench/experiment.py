@@ -58,7 +58,8 @@ from tokenbench.statistics import (
     bootstrap,
     paired_tasks,
 )
-from tokenbench.targets.python_callable import PythonCallableTarget
+from tokenbench.targets.base import TargetAdapter
+from tokenbench.targets.load import require_cost_bounds
 
 Slug = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")]
 
@@ -147,14 +148,8 @@ def load_experiment(path: Path) -> LoadedExperiment:
     suite = load_suite(
         suite_path, split="dev" if spec.screening or spec.search or spec.quality else None
     )
-    if (
-        spec.budget
-        and spec.budget.max_usd is not None
-        and not suite.spec.target.budgeted_model_calls
-    ):
-        raise ConfigurationError(
-            "budget.max_usd requires target.budgeted_model_calls and per-call cost bounds"
-        )
+    if spec.budget is not None and spec.budget.max_usd is not None:
+        require_cost_bounds(suite.spec.target)
     validation_suite = None
     if spec.quality is not None:
         validation_suite = load_suite(suite_path, split="validation", replace_split=True)
@@ -222,7 +217,7 @@ def load_experiment(path: Path) -> LoadedExperiment:
     )
 
 
-def verify_replay_target(experiment: LoadedExperiment, target: PythonCallableTarget) -> None:
+def verify_replay_target(experiment: LoadedExperiment, target: TargetAdapter) -> None:
     replay = experiment.spec.replay
     if replay is not None and replay.target_module_sha256 is not None:
         if target.source_hash() != replay.target_module_sha256:
@@ -494,6 +489,7 @@ def comparison_html(summary: ExperimentSummary) -> str:
             "Quality gate",
         ),
         rows,
+        row_ids=["candidate-baseline", *(f"result-{item.name}" for item in summary.candidates)],
     )
     status = f"{summary.status} ({summary.stop_reason})" if summary.stop_reason else summary.status
     results = (
@@ -566,7 +562,7 @@ def comparison_html(summary: ExperimentSummary) -> str:
     if summary.validation is not None:
         validation = summary.validation
         results += (
-            "<h2>Independent validation</h2>"
+            '<h2 id="validation-baseline">Independent validation</h2>'
             + table(
                 ("Measure", "Value"),
                 [
@@ -574,6 +570,12 @@ def comparison_html(summary: ExperimentSummary) -> str:
                     ("Stop reason", validation.reason or ""),
                     ("Selected on dev", ", ".join(validation.selected)),
                     ("Confirmed on validation", ", ".join(validation.confirmed)),
+                    (
+                        "Baseline successful trials",
+                        f"{validation.baseline.successful_trials}/{validation.baseline.trials}"
+                        if validation.baseline is not None
+                        else "Unavailable",
+                    ),
                 ],
             )
             + table(
@@ -589,7 +591,9 @@ def comparison_html(summary: ExperimentSummary) -> str:
                 ],
             )
         )
-        results += intervals_html("Validation", validation.candidates, summary.bootstrap)
+        results += intervals_html(
+            "Validation", validation.candidates, summary.bootstrap, prefix="validation"
+        )
         if validation.replay_configs:
             links = "".join(
                 f'<li><a href="{escape(path, quote=True)}">{escape(name)} replay YAML</a></li>'
@@ -609,11 +613,22 @@ def interval_cell(interval: Interval | None, scale: int = 1) -> str:
 
 
 def intervals_html(
-    label: str, candidates: list[CandidateResult], settings: BootstrapSettings
+    label: str,
+    candidates: list[CandidateResult],
+    settings: BootstrapSettings,
+    *,
+    prefix: str = "candidate",
 ) -> str:
+    with_intervals = [
+        (candidate, result)
+        for candidate in candidates
+        if (result := candidate.intervals) is not None
+    ]
     rows = [
         (
             candidate.name,
+            f"{candidate.totals.successful_trials}/{candidate.totals.trials}",
+            quality_label(candidate.quality),
             result.status,
             result.task_pairs,
             result.trial_pairs,
@@ -623,8 +638,7 @@ def intervals_html(
             interval_cell(result.tokens_per_trial_delta),
             interval_cell(result.cost_usd_per_trial_delta),
         )
-        for candidate in candidates
-        if (result := candidate.intervals) is not None
+        for candidate, result in with_intervals
     ]
     if not rows:
         return ""
@@ -635,6 +649,8 @@ def intervals_html(
         + table(
             (
                 "Configuration",
+                "Successful trials",
+                "Quality gate",
                 "Status",
                 "Task pairs",
                 "Trial pairs",
@@ -645,6 +661,7 @@ def intervals_html(
                 "USD per trial",
             ),
             rows,
+            row_ids=[f"{prefix}-{candidate.name}" for candidate, _ in with_intervals],
         )
     )
 
@@ -657,7 +674,7 @@ def quality_label(check: QualityCheck | None) -> str:
 
 async def run_experiment(
     experiment: LoadedExperiment,
-    target: PythonCallableTarget,
+    target: TargetAdapter,
     output: Path,
 ) -> ExperimentSummary:
     verify_replay_target(experiment, target)
@@ -754,6 +771,10 @@ async def run_experiment(
             phases=phases,
             elapsed_seconds=elapsed_seconds,
         ),
+        validation_names={item.name for item in validation.candidates}
+        if validation is not None
+        else set(),
+        confirmed_names=set(validation.confirmed) if validation is not None else set(),
     )
     return summary
 
@@ -776,7 +797,7 @@ class ValidationRun:
 @dataclass(frozen=True)
 class PhaseRunner:
     suite: LoadedSuite
-    target: PythonCallableTarget
+    target: TargetAdapter
     output: Path
     baseline: BaselineSummary
     budget: ExperimentBudget | None
