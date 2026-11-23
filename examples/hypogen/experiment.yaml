@@ -1,0 +1,16 @@
+schema_version: 1
+experiment_id: hypogen-evidence
+suite: suite.yaml
+budget:
+  max_trials: 2
+  max_seconds: 30
+  max_usd: '0'
+candidates:
+  - name: evidence-dedup
+    policies:
+      - id: filter.deduplicate
+  - name: evidence-projection
+    policies:
+      - id: filter.schema_projection
+        parameters:
+          allow_keys: [id, source, quote, synthetic, kind, text_format, availability_basis, published_at, obtained_at]

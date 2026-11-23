@@ -11,7 +11,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from tokenbench.budget import StopReason
-from tokenbench.config import TargetSpec
+from tokenbench.config import ExecutionMode, TargetSpec
 from tokenbench.policies.models import HookName, PolicyAudit
 from tokenbench.pricing import UsageRecord
 from tokenbench.storage import AttemptStatus, CallStatus, Ledger
@@ -29,7 +29,7 @@ class RunManifest(BaseModel):
     schema_version: Literal[1] = 1
     tokenbench_version: str
     suite_id: str
-    execution: Literal["python_callable", "local_fixture"]
+    execution: ExecutionMode
     target: TargetSpec
     split: Split | None
     case_count: int
@@ -75,6 +75,10 @@ class Totals(BaseModel):
     calls_with_missing_token_counts: int
     known_input_tokens: int
     known_output_tokens: int
+    known_cached_input_tokens: int | None = None
+    calls_with_cache_counts: int = 0
+    known_reasoning_tokens: int | None = None
+    calls_with_reasoning_counts: int = 0
     total_tokens: int | None
     known_cost_usd: Decimal | None
     total_cost_usd: Decimal | None
@@ -138,6 +142,12 @@ def summarize(
     missing_counts = sum(call.input_tokens is None or call.output_tokens is None for call in calls)
     input_tokens = sum(call.input_tokens or 0 for call in calls)
     output_tokens = sum(call.output_tokens or 0 for call in calls)
+    cached_tokens = [
+        call.cached_input_tokens for call in calls if call.cached_input_tokens is not None
+    ]
+    reasoning_tokens = [
+        call.reasoning_tokens for call in calls if call.reasoning_tokens is not None
+    ]
     untraced = sum(not attempt.model_calls for attempt in attempts)
     costs = [call.cost_usd for call in calls if call.cost_usd is not None]
     known_cost = sum(costs, Decimal(0)) if costs else None
@@ -155,6 +165,10 @@ def summarize(
         calls_with_missing_token_counts=missing_counts,
         known_input_tokens=input_tokens,
         known_output_tokens=output_tokens,
+        known_cached_input_tokens=sum(cached_tokens) if cached_tokens else None,
+        calls_with_cache_counts=len(cached_tokens),
+        known_reasoning_tokens=sum(reasoning_tokens) if reasoning_tokens else None,
+        calls_with_reasoning_counts=len(reasoning_tokens),
         total_tokens=input_tokens + output_tokens
         if calls and not (missing_counts or untraced)
         else None,
@@ -182,10 +196,18 @@ def summarize(
     )
 
 
-def table(headers: tuple[str, ...], rows: Sequence[tuple[object, ...]]) -> str:
+def table(
+    headers: tuple[str, ...],
+    rows: Sequence[tuple[object, ...]],
+    *,
+    row_ids: Sequence[str] | None = None,
+) -> str:
     head = "".join(f'<th scope="col">{escape(header)}</th>' for header in headers)
     body = "\n".join(
-        "<tr>" + "".join(f"<td>{escape(str(cell))}</td>" for cell in row) + "</tr>" for row in rows
+        (f'<tr id="{escape(row_ids[index], quote=True)}">' if row_ids is not None else "<tr>")
+        + "".join(f"<td>{escape(str(cell))}</td>" for cell in row)
+        + "</tr>"
+        for index, row in enumerate(rows)
     )
     return f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
 
@@ -193,11 +215,12 @@ def table(headers: tuple[str, ...], rows: Sequence[tuple[object, ...]]) -> str:
 def render_html(summary: BaselineSummary) -> str:
     manifest = summary.manifest
     totals = summary.totals
+    target = manifest.target
     metadata = table(
         ("Setting", "Value"),
         [
             ("Execution", manifest.execution),
-            ("Target", manifest.target.entrypoint),
+            ("Target", target.entrypoint if target.adapter == "python" else target.base_url),
             ("Model", f"{manifest.target.provider}/{manifest.target.model}"),
             ("Grader", manifest.grader),
             ("Price snapshot", manifest.price_snapshot_id or "None"),
@@ -236,6 +259,18 @@ def render_html(summary: BaselineSummary) -> str:
             ("Calls with missing token counts", totals.calls_with_missing_token_counts),
             ("Known input tokens", totals.known_input_tokens),
             ("Known output tokens", totals.known_output_tokens),
+            (
+                "Cached input tokens (included in input)",
+                totals.known_cached_input_tokens
+                if totals.known_cached_input_tokens is not None
+                else "Unknown",
+            ),
+            (
+                "Reasoning tokens (included in output)",
+                totals.known_reasoning_tokens
+                if totals.known_reasoning_tokens is not None
+                else "Unknown",
+            ),
             ("Total tokens", totals.total_tokens if totals.total_tokens is not None else "Unknown"),
             (
                 "Known cost (USD)",
@@ -297,7 +332,7 @@ def render_html(summary: BaselineSummary) -> str:
     )
 
 
-def html_document(title: str, body: str) -> str:
+def html_document(title: str, body: str, *, styles: str = "") -> str:
     return f"""<!doctype html>
 <html lang="en">
 <meta charset="utf-8">
@@ -307,6 +342,8 @@ def html_document(title: str, body: str) -> str:
 body {{ font: 1rem system-ui, sans-serif; max-width: 68rem; padding: 1rem; margin: auto; }}
 table {{ border-collapse: collapse; margin-bottom: 1rem; width: 100%; text-align: left; }}
 th, td {{ padding: .5rem; border-bottom: 1px solid #bbb; overflow-wrap: anywhere; }}
+tr:target {{ outline: 2px solid #2674a6; scroll-margin-block-start: 1rem; }}
+{styles}
 </style>
 <main>
 <h1>{escape(title)}</h1>

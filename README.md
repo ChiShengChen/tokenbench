@@ -1,6 +1,6 @@
 # TokenBench
 
-TokenBench runs local baselines and deterministic policy experiments for Python applications. It executes each case against a callable, grades its JSON result by exact match, and records attempts, model calls, usage, and policy events in SQLite. The bundled toy RAG suite runs end to end against frozen records and a deterministic fixture model.
+TokenBench runs baselines for Python applications and OpenAI-compatible Chat Completions endpoints, plus deterministic policy experiments on targets with hooks. It grades each result by exact match and records attempts, model calls, usage, and policy events in SQLite. The bundled toy RAG suite runs end to end against frozen records and a deterministic fixture model.
 
 ```mermaid
 flowchart LR
@@ -37,8 +37,8 @@ If your checkout is on exFAT, run `export UV_PROJECT_ENVIRONMENT="$HOME/.local/s
 | `tokenbench --help` | Lists the available commands. Add `--help` after a command to show its options. |
 | `tokenbench doctor` | Reports the Python and SQLite versions and performs an in-memory SQLite write. |
 | `tokenbench init --path DIRECTORY` | Copies the offline Toy RAG and tool-screening suites, task cases, price snapshot, and example experiments to the requested directory. Existing demo files cause the command to stop before copying. |
-| `tokenbench baseline --suite FILE --dry-run` | Validates YAML, all task records, the price snapshot if configured, and the Python entrypoint. It imports the configured module. It runs zero trials and writes zero output files. |
-| `tokenbench baseline --suite FILE --out DIRECTORY` | Runs the selected cases sequentially and writes the three artifacts below. `--out` must point to a new or empty directory. A completed benchmark exits successfully regardless of the measured pass rate. Invalid configuration and filesystem errors produce a nonzero exit status. |
+| `tokenbench baseline --suite FILE --dry-run` | Validates YAML, task records, pricing, and the configured target. Python targets import their configured module. Chat targets validate message inputs and the configured credential. It runs zero trials and writes zero output files. |
+| `tokenbench baseline --suite FILE --out DIRECTORY [--budget-usd USD]` | Runs the selected cases sequentially. The optional USD budget uses the target's per-call bounds and preserves results when it stops a run. `--out` must point to a new or empty directory. A completed benchmark exits successfully regardless of the measured pass rate. Invalid configuration and filesystem errors produce a nonzero exit status. |
 | `tokenbench run --experiment FILE --dry-run` | Validates the experiment, suite, Python entrypoint, policy configuration, and any validation split or budget requirements. It runs zero trials and writes zero output files. |
 | `tokenbench run --experiment FILE [--out DIRECTORY]` | Runs named candidates, single-policy and pairwise screening, or optional Optuna search. It writes comparison and Pareto reports, including completed results when a configured budget stops the run. Output defaults to `runs/<experiment-id>` and must point to a new or empty directory. |
 
@@ -101,7 +101,43 @@ Each line in `cases.jsonl` holds one task with a unique `task_id`. This example 
 {"schema_version":1,"task_id":"oak-code","input":{"query":"What is Oak Point's catalog code?"},"task_type":"lookup","split":"dev","grader_spec":{"kind":"exact","expected":{"answer":"OP-201"}}}
 ```
 
-Optionally add `price_snapshot: prices.json` to the suite to estimate USD cost from frozen per-million input and output rates. The bundled `prices.json` shows the v1 format. Provider-reported cost takes precedence. Provider-reported token counts take precedence over estimates. Reasoning and cache-read counts, when supplied, are treated as subsets of output and input respectively. A call with known cached input and no reported USD cost has unknown cost because the snapshot only supplies standard rates.
+Optionally add `price_snapshot: prices.json` to the suite to estimate USD cost from frozen per-million input and output rates. The bundled `prices.json` shows the v1 format. Provider-reported cost and token counts take precedence. Cache-read and reasoning counts are included within input and output totals respectively. A snapshot can set `cached_input_usd_per_million` to price cached reads separately. When a call reports cached reads and has neither a provider charge nor a matching cached rate, its cost is unknown.
+
+The [Hypogen example](examples/hypogen/README.md) meters a research app's model requests with an in-process mock and compares exact evidence deduplication and field projection on six cases.
+
+## Connect an OpenAI-compatible endpoint
+
+The adapter sends one non-streaming text request to `POST {base_url}/chat/completions`. It grades the single returned text on a normal `stop` completion. Configure `base_url` through the API prefix, such as `http://127.0.0.1:8001/v1`. For authenticated services, set `api_key_env` to an environment variable name and put the bearer token in that variable. The compiler rejects policies that require internal target hooks. [Chat Completions API reference](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)
+
+```yaml
+schema_version: 1
+suite_id: chat-fixture
+execution: local_fixture
+target:
+  adapter: openai_compatible
+  provider: loopback
+  model: fixture-chat
+  base_url: http://127.0.0.1:8001/v1
+  timeout_seconds: 2
+  max_completion_tokens: 64
+  max_cost_usd: '0'
+cases: chat-cases.jsonl
+max_retries: 2
+```
+
+```json
+{"task_id":"test-chat","task_type":"chat","input":{"messages":[{"role":"user","content":"Return the fixed answer."}]},"grader_spec":{"kind":"exact","expected":"fixture answer"}}
+```
+
+```sh
+uv run tokenbench baseline --suite ./chat-suite.yaml --budget-usd 0 --dry-run
+uv run tokenbench baseline --suite ./chat-suite.yaml --budget-usd 0 --out ./runs/chat-baseline
+uv run pytest tests/test_openai_compatible.py
+```
+
+The example suite assumes a free local endpoint. The last command starts loopback mock servers itself and covers timeouts, retries, usage accounting, and budget admission. `timeout_seconds` is the per-request deadline. Timeouts, transport failures, HTTP 408, HTTP 429, and server errors use the suite's retry limit. Rejected requests and invalid or truncated completions produce terminal failures. Each attempted HTTP call gets its own ledger row. [HTTPX timeout reference](https://www.python-httpx.org/advanced/timeouts/)
+
+The adapter normalizes `prompt_tokens`, `completion_tokens`, cached reads, and reasoning tokens. Provider charges can arrive as `usage.cost_usd` or `usage.cost` in USD. A timed-out or otherwise unreported attempt leaves its usage unknown, and the summary preserves known subtotals separately. With a USD budget, `target.max_cost_usd` is the reservation per HTTP attempt, including retries, and must bound the actual charge. [OpenRouter usage accounting example](https://openrouter.ai/blog/insights/cost-vs-quality-tradeoff-framework-for-agent-models/)
 
 ## Run a policy experiment
 
@@ -252,7 +288,7 @@ Experiments use the same suite and input order for all candidates. Reset any ext
 - `summary.json` contains the manifest, paired task and repetition identifiers, final-trial success totals, all attempts, and per-call usage and cost sources. Totals include failed calls and retries. A complete total is `null` when relevant observations are missing. Known subtotals and missing counts are shown separately. USD amounts are decimal strings.
 - `summary.html` presents the run metadata, aggregate results, and attempt ledger as a standalone report.
 
-An experiment creates `baseline/` and one directory per candidate with its own ledger and summaries. Independent validation runs are under `validation/`. `comparison.json` and `comparison.html` show paired outcomes, budget status, and quality decisions. `pareto.json` and `pareto.html` show success rate, total tokens, USD, and observed p95 trial latency for each split. P95 uses the nearest rank on per-trial sums of attempt durations, including retries. A candidate is on the observed frontier if no eligible configuration matches or improves every objective and improves at least one. A partial experiment can still show a frontier among fully evaluated points. Missing metrics appear as `null` in JSON and exclude a point from the frontier.
+An experiment creates `baseline/` and one directory per candidate with its own ledger and summaries. Independent validation runs are under `validation/`. `comparison.json` and `comparison.html` show paired outcomes, budget status, and quality decisions. `pareto.json` and `pareto.html` show success rate, total tokens, USD, and observed p95 trial latency for each split. The HTML includes three clickable scatter plots. A green ring marks a confirmed candidate, and its point opens the validation outcomes and confidence intervals. P95 uses the nearest rank on per-trial sums of attempt durations, including retries. A candidate is on the observed frontier if no eligible configuration matches or improves every objective and improves at least one. A partial experiment can still show a frontier among fully evaluated points. Missing metrics appear as `null` in JSON and exclude a point from the frontier.
 
 The per-attempt policy audit includes changed or removed segment IDs, kept and removed references, estimated before/after context tokens, compressor overhead, and failure reasons. SQLite stores policy runtime, and the deterministic JSON includes policy IDs, version, order, and configuration hashes. Context estimates use whitespace counts for hook inputs and outputs. Step checks record their step number and leave context counts unset. End-to-end token deltas come from model call usage in the ledger.
 

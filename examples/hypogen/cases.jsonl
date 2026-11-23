@@ -1,0 +1,6 @@
+{"schema_version":1,"task_id":"shutdown-original","task_type":"exact_financial_arithmetic","input":{"operation":"original"},"grader_spec":{"kind":"exact","expected":{"incremental_eps":"0.048","break_even_lots":400}}}
+{"schema_version":1,"task_id":"shutdown-recompute","task_type":"scenario_recalculation","input":{"operation":"recompute"},"grader_spec":{"kind":"exact","expected":{"eps":"-0.024","delta":"-0.072","parent_preserved":true}}}
+{"schema_version":1,"task_id":"qualification-before-availability","task_type":"evidence_cutoff","input":{"operation":"qualification","as_of":"2025-01-20T18:00:00+08:00"},"grader_spec":{"kind":"exact","expected":[]}}
+{"schema_version":1,"task_id":"qualification-after-availability","task_type":"evidence_cutoff","input":{"operation":"qualification","as_of":"2025-01-21T09:00:00+08:00"},"grader_spec":{"kind":"exact","expected":["qualification:1"]}}
+{"schema_version":1,"task_id":"missing-supply-evidence","task_type":"evidence_validation","input":{"operation":"uncited-supply"},"grader_spec":{"kind":"exact","expected":"unknown"}}
+{"schema_version":1,"task_id":"asml-historical-cutoff","task_type":"historical_replay","input":{"operation":"historical-cutoff"},"grader_spec":{"kind":"exact","expected":{"future_q4_visible":false}}}

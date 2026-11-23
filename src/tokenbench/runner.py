@@ -1,4 +1,4 @@
-"""Run Python target trials with scoped policy hooks and exact grading."""
+"""Run target trials with scoped policy hooks and exact grading."""
 
 import asyncio
 from contextlib import closing
@@ -19,14 +19,14 @@ from tokenbench.policies.runtime import PolicySession
 from tokenbench.pricing import ModelPrice
 from tokenbench.report import BaselineSummary, PolicyManifest, RunManifest, summarize, write_reports
 from tokenbench.storage import Ledger
-from tokenbench.targets.python_callable import PythonCallableTarget
+from tokenbench.targets.base import PermanentTargetError, TargetAdapter
 from tokenbench.tasks import TaskCase
 from tokenbench.trace import TraceSink
 
 
 async def run_baseline(
     suite: LoadedSuite,
-    target: PythonCallableTarget,
+    target: TargetAdapter,
     output: Path,
     budget: ExperimentBudget | None = None,
 ) -> BaselineSummary:
@@ -41,7 +41,7 @@ def create_output(output: Path) -> None:
 
 async def run_suite(
     suite: LoadedSuite,
-    target: PythonCallableTarget,
+    target: TargetAdapter,
     output: Path,
     compiled: CompiledPolicies,
     budget: ExperimentBudget | None = None,
@@ -97,7 +97,7 @@ async def run_suite(
 
 async def run_trial(
     suite: LoadedSuite,
-    target: PythonCallableTarget,
+    target: TargetAdapter,
     compiled: CompiledPolicies,
     ledger: Ledger,
     task: TaskCase,
@@ -124,7 +124,7 @@ async def run_trial(
         except BudgetStopped as exc:
             ledger.finish_attempt(attempt_id, "interrupted", started, exc.reason)
             raise
-        except PolicyError as exc:
+        except (PolicyError, PermanentTargetError) as exc:
             ledger.finish_attempt(attempt_id, "failed", started, type(exc).__name__)
             return
         except Exception as exc:
@@ -138,7 +138,7 @@ async def run_trial(
 
 
 async def evaluate(
-    target: PythonCallableTarget,
+    target: TargetAdapter,
     task_input: dict[str, JsonValue],
     trace: TraceSink,
     budget: ExperimentBudget | None,

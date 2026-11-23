@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -47,6 +48,40 @@ def test_quality_gate_validates_dev_finalist_when_search_trial_budget_stops(tmp_
     dev, val = pareto["phases"]
     assert "project" not in dev["frontier"]
     assert {point["name"] for point in val["points"]} == {"baseline", "boilerplate"}
+    chart = (output / "pareto.html").read_text(encoding="utf-8")
+    comparison = (output / "comparison.html").read_text(encoding="utf-8")
+    assert chart.count('<figure class="scatter">') == 6
+    assert re.search(
+        r'class="point(?: frontier)? confirmed" href="comparison.html#validation-boilerplate"',
+        chart,
+    )
+    assert "independently confirmed" in chart
+    for fragment in re.findall(r'href="comparison\.html#([^"]+)"', chart):
+        assert f'id="{fragment}"' in comparison
+
+
+def test_pareto_links_work_for_an_experiment_entirely_on_validation(tmp_path: Path) -> None:
+    assert cli.invoke(app, ["init", "--path", str(tmp_path)]).exit_code == 0
+    suite = tmp_path / "screening-suite.yaml"
+    suite.write_text(
+        suite.read_text(encoding="utf-8").replace("split: dev", "split: validation"),
+        encoding="utf-8",
+    )
+    experiment = tmp_path / "single-split.yaml"
+    experiment.write_text(
+        """schema_version: 1
+experiment_id: single-split
+suite: screening-suite.yaml
+candidates:
+  - {name: unchanged, policies: []}
+""",
+        encoding="utf-8",
+    )
+    output = tmp_path / "out"
+    run_demo(tmp_path, experiment.name, output)
+    chart = (output / "pareto.html").read_text(encoding="utf-8")
+    assert 'href="comparison.html#candidate-unchanged"' in chart
+    assert 'id="candidate-unchanged"' in (output / "comparison.html").read_text(encoding="utf-8")
 
 
 def test_dev_finalist_can_fail_independent_critical_case(tmp_path: Path) -> None:
