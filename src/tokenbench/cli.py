@@ -12,11 +12,12 @@ from typing import Annotated
 import typer
 
 from tokenbench.config import ConfigurationError, load_suite
+from tokenbench.experiment import load_experiment, run_experiment
 from tokenbench.runner import run_baseline
 from tokenbench.targets.python_callable import PythonCallableTarget
 
 app = typer.Typer(
-    help="Initialize, validate, and run local TokenBench baselines.",
+    help="Initialize and run local TokenBench baselines and policy experiments.",
     no_args_is_help=True,
     add_completion=False,
     pretty_exceptions_show_locals=False,
@@ -27,9 +28,9 @@ app = typer.Typer(
 def init(
     path: Annotated[Path, typer.Option(help="Directory for the bundled toy RAG suite.")],
 ) -> None:
-    """Copy the offline example suite, cases, and price snapshot."""
+    """Copy the offline suite, fixtures, and example policy experiment."""
     assets = files("tokenbench.demo")
-    filenames = ("suite.yaml", "cases.jsonl", "prices.json")
+    filenames = ("suite.yaml", "cases.jsonl", "prices.json", "experiment.yaml")
     try:
         path.mkdir(parents=True, exist_ok=True)
         if any((path / name).exists() or (path / name).is_symlink() for name in filenames):
@@ -87,3 +88,35 @@ def baseline(
         f"{totals.successful_trials}/{totals.trials} trials passed ({totals.attempts} attempts)"
     )
     typer.echo(f"Results written to {out}")
+
+
+@app.command()
+def run(
+    experiment: Annotated[Path, typer.Option(help="Path to a v1 experiment YAML file.")],
+    out: Annotated[
+        Path | None, typer.Option(help="Output directory. Defaults to runs/<experiment-id>.")
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option(help="Validate the suite, target, and policies without running trials.")
+    ] = False,
+) -> None:
+    """Compare explicitly configured policies against an unmodified baseline."""
+    try:
+        loaded = load_experiment(experiment)
+        target = PythonCallableTarget.from_spec(loaded.suite.spec.target)
+        if dry_run:
+            typer.echo(
+                f"Valid experiment {loaded.spec.experiment_id!r}: {len(loaded.configurations)} candidates"
+            )
+            return
+        output = out if out is not None else Path("runs") / loaded.spec.experiment_id
+        summary = asyncio.run(run_experiment(loaded, target, output))
+    except (ConfigurationError, OSError, sqlite3.Error) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    for candidate in summary.candidates:
+        typer.echo(
+            f"{candidate.name}: {candidate.totals.successful_trials}/{candidate.totals.trials} "
+            f"trials passed, {len(candidate.regressed_trials)} regressions ({candidate.status})"
+        )
+    typer.echo(f"Comparison written to {output}")

@@ -22,7 +22,7 @@ cli = CliRunner()
 
 
 def test_help_and_doctor() -> None:
-    for command in ([], ["init"], ["doctor"], ["baseline"]):
+    for command in ([], ["init"], ["doctor"], ["baseline"], ["run"]):
         result = cli.invoke(app, [*command, "--help"])
         assert result.exit_code == 0, result.output
         assert "Usage:" in result.output
@@ -37,6 +37,7 @@ def test_demo_runs_and_reruns_with_identical_reports(tmp_path: Path) -> None:
     assert initialized.exit_code == 0, initialized.output
     assert sorted(path.name for path in demo.iterdir()) == [
         "cases.jsonl",
+        "experiment.yaml",
         "prices.json",
         "suite.yaml",
     ]

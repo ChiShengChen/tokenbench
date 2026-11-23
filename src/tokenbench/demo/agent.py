@@ -5,6 +5,7 @@ import re
 
 from pydantic import JsonValue
 
+from tokenbench.policies.models import ContextSegment
 from tokenbench.trace import TraceSink
 
 _RECORDS = (
@@ -45,7 +46,22 @@ def run(task_input: dict[str, JsonValue], trace: TraceSink) -> JsonValue:
     documents = sorted(_CORPUS, key=lambda document: -len(terms(document["title"]) & query_terms))[
         :3
     ]
-    prompt = json.dumps({"query": query, "documents": documents}, sort_keys=True)
+    context = trace.apply_context(
+        "retrieval",
+        [
+            ContextSegment(
+                segment_id=document["source_id"],
+                kind="retrieved_doc",
+                content=dict(document),
+                source_ids=(document["source_id"],),
+                mutable=True,
+            )
+            for document in documents
+        ],
+    )
+    prompt = json.dumps(
+        {"query": query, "documents": [segment.content for segment in context]}, sort_keys=True
+    )
     with trace.model_call() as call:
         answer = fixture_completion(prompt)
         call.estimate_usage(len(prompt.split()), len(json.dumps(answer).split()))

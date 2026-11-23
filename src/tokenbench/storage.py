@@ -6,6 +6,7 @@ from pathlib import Path
 from time import perf_counter_ns
 from typing import Literal, TypeAlias
 
+from tokenbench.policies.models import PolicyAudit
 from tokenbench.pricing import UsageRecord
 
 AttemptStatus: TypeAlias = Literal["passed", "failed", "error", "interrupted"]
@@ -48,6 +49,19 @@ CREATE TABLE model_calls (
     duration_ms REAL
 );
 CREATE INDEX model_calls_attempt_id ON model_calls(attempt_id);
+CREATE TABLE policy_events (
+    id INTEGER PRIMARY KEY,
+    attempt_id INTEGER NOT NULL REFERENCES attempts(id),
+    policy_id TEXT NOT NULL,
+    hook TEXT NOT NULL,
+    status TEXT NOT NULL,
+    before_tokens INTEGER,
+    after_tokens INTEGER,
+    reason TEXT,
+    runtime_ms REAL NOT NULL,
+    audit_json TEXT NOT NULL
+);
+CREATE INDEX policy_events_attempt_id ON policy_events(attempt_id);
 """
 
 
@@ -132,3 +146,20 @@ class Ledger:
 
     def finish_run(self) -> None:
         self.connection.execute("UPDATE run_manifest SET finished_at = ? WHERE id = 1", (now(),))
+
+    def record_policy(self, attempt_id: int, audit: PolicyAudit, started: int) -> None:
+        self.connection.execute(
+            """INSERT INTO policy_events (attempt_id, policy_id, hook, status, before_tokens,
+               after_tokens, reason, runtime_ms, audit_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                attempt_id,
+                audit.policy_id,
+                audit.hook,
+                audit.status,
+                audit.before_tokens,
+                audit.after_tokens,
+                audit.reason,
+                elapsed_ms(started),
+                audit.model_dump_json(),
+            ),
+        )

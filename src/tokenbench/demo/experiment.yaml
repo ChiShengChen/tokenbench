@@ -1,0 +1,12 @@
+schema_version: 1
+experiment_id: toy-rag-topk
+suite: suite.yaml
+candidates:
+  - name: topk-2
+    policies:
+      - id: rag.topk
+        parameters: {k: 2}
+  - name: topk-1
+    policies:
+      - id: rag.topk
+        parameters: {k: 1}

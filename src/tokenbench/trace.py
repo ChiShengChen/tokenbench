@@ -1,11 +1,13 @@
 """Opt-in model-call instrumentation for trusted Python targets."""
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from time import perf_counter_ns
 
 from tokenbench.config import TargetSpec
+from tokenbench.policies.models import ContextHook, ContextSegment
+from tokenbench.policies.runtime import PolicySession
 from tokenbench.pricing import ModelPrice, ProviderUsage, normalize_usage
 from tokenbench.storage import CallStatus, Ledger
 
@@ -31,6 +33,22 @@ class TraceSink:
     _attempt_id: int
     _target: TargetSpec
     _prices: dict[tuple[str, str], ModelPrice]
+    _policies: PolicySession | None = None
+
+    def apply_context(
+        self,
+        hook: ContextHook,
+        segments: Sequence[ContextSegment],
+    ) -> tuple[ContextSegment, ...]:
+        """Pass a ranked, chronological, or tool-provided context through an opted-in hook."""
+        if self._policies is None:
+            return tuple(segments)
+        return self._policies.apply_context(hook, segments)
+
+    def step(self) -> None:
+        """Call before work begins on each agent step."""
+        if self._policies is not None:
+            self._policies.step()
 
     @contextmanager
     def model_call(
@@ -40,6 +58,8 @@ class TraceSink:
         model: str | None = None,
     ) -> Iterator[ModelCall]:
         """Record one call even when the underlying call raises an exception."""
+        if self._policies is not None:
+            self._policies.check()
         provider_id = provider or self._target.provider
         model_id = model or self._target.model
         call_id = self._ledger.start_call(self._attempt_id, provider_id, model_id)

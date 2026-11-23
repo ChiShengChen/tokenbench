@@ -2,6 +2,7 @@
 
 import json
 from collections import Counter, defaultdict
+from collections.abc import Sequence
 from decimal import Decimal
 from html import escape
 from pathlib import Path
@@ -10,9 +11,17 @@ from typing import Literal
 from pydantic import BaseModel
 
 from tokenbench.config import TargetSpec
+from tokenbench.policies.models import HookName, PolicyAudit
 from tokenbench.pricing import UsageRecord
 from tokenbench.storage import AttemptStatus, CallStatus, Ledger
 from tokenbench.tasks import Split
+
+
+class PolicyManifest(BaseModel):
+    id: str
+    hook: HookName
+    version: Literal[1] = 1
+    config_sha256: str
 
 
 class RunManifest(BaseModel):
@@ -28,6 +37,7 @@ class RunManifest(BaseModel):
     grader: Literal["exact-json-v1"] = "exact-json-v1"
     price_snapshot_id: str | None
     fingerprints: dict[str, str]
+    policies: tuple[PolicyManifest, ...] = ()
 
 
 class CallSummary(UsageRecord):
@@ -46,6 +56,7 @@ class AttemptSummary(BaseModel):
     passed: bool | None
     error_type: str | None
     model_calls: list[CallSummary]
+    policy_events: list[PolicyAudit]
 
 
 class Totals(BaseModel):
@@ -84,8 +95,22 @@ def summarize(ledger: Ledger, manifest: RunManifest) -> BaselineSummary:
         calls_by_attempt[attempt_id].append(call)
         calls.append(call)
 
+    events_by_attempt: dict[int, list[PolicyAudit]] = defaultdict(list)
+    for row in ledger.connection.execute(
+        "SELECT attempt_id, audit_json FROM policy_events ORDER BY id"
+    ):
+        events_by_attempt[row["attempt_id"]].append(
+            PolicyAudit.model_validate_json(row["audit_json"])
+        )
+
     attempts = [
-        AttemptSummary.model_validate({**dict(row), "model_calls": calls_by_attempt[row["id"]]})
+        AttemptSummary.model_validate(
+            {
+                **dict(row),
+                "model_calls": calls_by_attempt[row["id"]],
+                "policy_events": events_by_attempt[row["id"]],
+            }
+        )
         for row in ledger.connection.execute("SELECT * FROM attempts ORDER BY id")
     ]
     final_attempts = {(attempt.task_id, attempt.repetition): attempt for attempt in attempts}
@@ -117,7 +142,7 @@ def summarize(ledger: Ledger, manifest: RunManifest) -> BaselineSummary:
     return BaselineSummary(manifest=manifest, totals=totals, attempts=attempts)
 
 
-def table(headers: tuple[str, ...], rows: list[tuple[object, ...]]) -> str:
+def table(headers: tuple[str, ...], rows: Sequence[tuple[object, ...]]) -> str:
     head = "".join(f'<th scope="col">{escape(header)}</th>' for header in headers)
     body = "\n".join(
         "<tr>" + "".join(f"<td>{escape(str(cell))}</td>" for cell in row) + "</tr>" for row in rows
@@ -182,33 +207,76 @@ def render_html(summary: BaselineSummary) -> str:
             for a in summary.attempts
         ],
     )
+    events = [
+        (
+            attempt.task_id,
+            attempt.repetition,
+            attempt.attempt,
+            event.policy_id,
+            event.status,
+            event.before_tokens,
+            event.after_tokens,
+            ", ".join(event.segments_modified),
+            event.reason or "",
+        )
+        for attempt in summary.attempts
+        for event in attempt.policy_events
+    ]
+    audits = ""
+    if events:
+        audits = "<h2>Policy audit</h2>" + table(
+            (
+                "Task",
+                "Repetition",
+                "Attempt",
+                "Policy",
+                "Status",
+                "Before (est.)",
+                "After (est.)",
+                "Updated or removed segments",
+                "Reason",
+            ),
+            events,
+        )
+    label = "candidate" if manifest.policies else "baseline"
+    return html_document(
+        f"{manifest.suite_id} {label}",
+        f"""{metadata}
+<h2>Results</h2>
+{metrics}
+<h2>Attempts</h2>
+{attempts}
+{audits}""",
+    )
+
+
+def html_document(title: str, body: str) -> str:
     return f"""<!doctype html>
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{escape(manifest.suite_id)} baseline</title>
+<title>{escape(title)}</title>
 <style>
 body {{ font: 1rem system-ui, sans-serif; max-width: 68rem; padding: 1rem; margin: auto; }}
 table {{ border-collapse: collapse; margin-bottom: 1rem; width: 100%; text-align: left; }}
 th, td {{ padding: .5rem; border-bottom: 1px solid #bbb; overflow-wrap: anywhere; }}
 </style>
 <main>
-<h1>{escape(manifest.suite_id)} baseline</h1>
-{metadata}
-<h2>Results</h2>
-{metrics}
-<h2>Attempts</h2>
-{attempts}
+<h1>{escape(title)}</h1>
+{body}
 </main>
 </html>
 """
 
 
 def write_reports(output: Path, summary: BaselineSummary) -> None:
+    write_artifacts(output, "summary", summary, render_html(summary))
+
+
+def write_artifacts(output: Path, stem: str, data: BaseModel, html: str) -> None:
     files = {
-        "summary.json": json.dumps(summary.model_dump(mode="json"), indent=2, sort_keys=True)
-        + "\n",
-        "summary.html": render_html(summary),
+        f"{stem}.json": json.dumps(data.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
+        f"{stem}.html": html,
     }
     for name, content in files.items():
         temporary = output / f".{name}.tmp"

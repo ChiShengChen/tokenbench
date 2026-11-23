@@ -8,6 +8,7 @@ from typing import Annotated, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from tokenbench.policies.models import HookName
 from tokenbench.pricing import PriceSnapshot
 from tokenbench.tasks import Split, TaskCase, canonical_json
 
@@ -23,6 +24,7 @@ class TargetSpec(BaseModel):
     entrypoint: Annotated[str, Field(pattern=r"^[\w.]+:[A-Za-z_]\w*$")]
     provider: str
     model: str
+    hooks: tuple[HookName, ...] = ()
 
 
 class SuiteSpec(BaseModel):
@@ -90,12 +92,18 @@ def load_cases(data: bytes, path: Path) -> list[TaskCase]:
     return cases
 
 
+def parse_yaml(data: bytes, path: Path) -> object:
+    try:
+        document: object = yaml.safe_load(data)
+        return document
+    except yaml.YAMLError as exc:
+        raise ConfigurationError(f"{path} is invalid YAML") from exc
+
+
 def load_suite(path: Path) -> LoadedSuite:
     config_data = read_file(path)
     try:
-        spec = SuiteSpec.model_validate(yaml.safe_load(config_data))
-    except yaml.YAMLError as exc:
-        raise ConfigurationError(f"{path} is invalid YAML") from exc
+        spec = SuiteSpec.model_validate(parse_yaml(config_data, path))
     except ValidationError as exc:
         raise ConfigurationError(
             f"{path} has invalid suite data: {describe_validation(exc)}"

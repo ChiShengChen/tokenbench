@@ -6,5 +6,6 @@ target:
   entrypoint: tokenbench.demo.agent:run
   provider: local
   model: fixture-rag-v1
+  hooks: [retrieval]
 cases: cases.jsonl
 price_snapshot: prices.json
